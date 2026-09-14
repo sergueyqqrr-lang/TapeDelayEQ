@@ -6,8 +6,12 @@
       - Buffer circular con lectura fraccional (interpolación).
       - Modulación del tiempo de delay con dos LFOs (wow lento, flutter rápido)
         para simular la inestabilidad mecánica de una cinta real.
-      - Saturación suave (tanh) en el camino de feedback, como la cabeza
-        de grabación/reproducción saturando la señal en cada pasada.
+      - Saturación suave (tanh) aplicada al ESCRIBIR en el buffer (como una
+        cabeza de grabación real saturando la señal entrante), no al leerla.
+        Esto es importante: si se saturara al leer, el valor guardado en el
+        buffer de feedback podría crecer sin límite en cada repetición y
+        recién "aplastarse" de golpe al leerlo, sonando como un recorte
+        abrupto en vez de una saturación musical progresiva.
 
     Esta clase SOLO se encarga del delay + modulación + saturación.
     El EQ se aplica desde fuera (en PluginProcessor), sobre la señal que
@@ -55,9 +59,10 @@ public:
     void setFlutterDepthMs (float ms) { flutterDepthSamples = (float) (ms * 0.001 * sampleRate); }
     void setSaturationDrive (float driveAmount) { drive = driveAmount; } // 1 = limpio, >1 = más saturado
 
-    // Lee la muestra retrasada+modulada+saturada para un canal dado.
-    // NO avanza el buffer (eso lo hace pushSample). Se usa para poder
-    // insertar el EQ entre la lectura y la escritura del feedback.
+    // Lee la muestra retrasada+modulada para un canal dado (SIN saturar:
+    // la saturación se aplica al escribir, ver pushSample). NO avanza el
+    // buffer (eso lo hace pushSample). Se usa para poder insertar el EQ
+    // entre la lectura y la escritura del feedback.
     float readSample (int channel)
     {
         const float wow     = wowLFO.processSample (0.0f)     * wowDepthSamples;
@@ -75,18 +80,19 @@ public:
 
         const float s0 = buffer.getSample (channel, idx0);
         const float s1 = buffer.getSample (channel, idx1);
-        const float interpolated = s0 + frac * (s1 - s0);
-
-        // Saturación tipo cinta (tanh) sobre lo leído
-        return std::tanh (interpolated * drive) / std::tanh (drive);
+        return s0 + frac * (s1 - s0);
     }
 
-    // Escribe la señal de feedback (input + eco procesado*feedbackGain) en el buffer.
+    // Escribe la señal de feedback (input + eco procesado*feedbackGain) en el
+    // buffer, aplicando la saturación tipo cinta AQUÍ (al "grabar"). Así el
+    // valor guardado siempre queda acotado, evitando que crezca sin control
+    // en repeticiones sucesivas con EQ boosteado.
     // Debe llamarse una vez por canal, en el mismo sample, DESPUÉS de haber
     // leído (readSample) y de haber pasado la señal por el EQ externo.
     void pushSample (int channel, float value)
     {
-        buffer.setSample (channel, writePos, value);
+        const float saturated = std::tanh (value * drive) / std::tanh (drive);
+        buffer.setSample (channel, writePos, saturated);
     }
 
     // Avanza el puntero de escritura una vez que todos los canales fueron escritos.
